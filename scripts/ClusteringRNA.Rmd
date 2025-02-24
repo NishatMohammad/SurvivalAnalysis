@@ -1,0 +1,156 @@
+---
+title: "Survival Analysis of Breast Cancer Cases: Clustering, Choosing the Value of k"
+author: "Dr. Nishat Mohammad"
+date: "2024-07-25"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: show
+---
+
+
+## 7. K-Means Clustering. 
+
+```{r kmeans_clustering}
+# Scale expression data using z-score method
+data_expression_scaled <- scale(data_expression2)
+
+# Add row names
+rownames(data_expression_scaled) <- data_merged$PATIENT_ID
+
+# Get the top 100 gene expressions
+data_expression_top100 <- data_expression_scaled[, top_genes$Gene]
+data_expression_top100[1:10,1:10]
+
+```
+Here the expression data for the top 100 genes was extracted.  
+ 
+ 
+### 7.1. Number of Clusters.  
+
+```{r cluster_number}
+# Range for clusters
+k_range <- 2:10
+
+# Within-cluster sum of squares (WCSS) for each k value
+wcss <- vector("numeric", length(k_range))
+
+# k-means for each value of k and get WCSS
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  kmeans_res <- kmeans(data_expression_top100, centers = k, nstart = 25)
+  wcss[i] <- kmeans_res$tot.withinss
+}
+
+# Elbow plot
+fviz_nbclust(data_expression_top100, kmeans, method = "wss", k.max = 10, nstart = 25)
+
+# silhouette method
+fviz_nbclust(data_expression_top100, kmeans, method = "silhouette")+
+  labs(subtitle = "Silhouette method")
+
+# Gap_Stat is very slow
+#set.seed(786)
+#fviz_nbclust(data_expression_top100, kmeans, nstart = 25,  method = "gap_stat", nboot = 500, verbose=FALSE)+
+#  labs(subtitle = "Gap statistic method")
+
+# Using NbClust()
+set.seed(786)  # For reproducibility
+nbclust_res <- NbClust(data = data_expression_top100, 
+                           distance = "euclidean", 
+                           min.nc = 2, 
+                           max.nc = 10, 
+                           method = "kmeans")
+
+
+# Correlation matrix for the distance
+dist.cor <- get_dist(data_expression_top100, method = "spearman")
+fviz_dist(dist.cor)
+nbclust_spearman <- NbClust(data = data_expression_top100,
+        diss = dist.cor,
+        distance = NULL,
+        min.nc = 2,
+        max.nc = 10,
+        method = "kmeans")
+
+
+```
+The elbow and Silhouette Plots were not conclusive. Using `NbClust()`, the Spearman correlation was applied to the `diss` option with NULL added to the distance option. Finally, 2 as the value of k number of clusters based on the Hubert Statistics Plots.  
+
+
+### 7.2 Clustering with k=2.    
+
+```{r Kmeans_k2}
+set.seed(786)
+kmeans_res <- kmeans(data_expression_top100, centers = 2, nstart = 25)
+str(kmeans_res)
+
+# Visualize clusters
+fviz_cluster(kmeans_res, data = data_expression_top100)
+
+```
+
+Note the two clusters are overlapping, higher values of K will be tried out.
+
+### 7.3. K-means clustering with higher values of k.  
+
+```{r Increase_k}
+k3 <- kmeans(data_expression_top100, centers = 3, nstart = 25)
+k4 <- kmeans(data_expression_top100, centers = 4, nstart = 25)
+k5 <- kmeans(data_expression_top100, centers = 5, nstart = 25)
+
+# plots to compare
+p1 <- fviz_cluster(kmeans_res, geom = "point", data = data_expression_top100) + ggtitle("k = 2")
+p2 <- fviz_cluster(k3, geom = "point",  data = data_expression_top100) + ggtitle("k = 3")
+p3 <- fviz_cluster(k4, geom = "point",  data = data_expression_top100) + ggtitle("k = 4")
+p4 <- fviz_cluster(k5, geom = "point",  data = data_expression_top100) + ggtitle("k = 5")
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+# Final Kmeans with k = 2
+final_kmeans <- kmeans_res
+fviz_cluster(final_kmeans, geom = "point",  data = data_expression_top100) + ggtitle("k = 2")
+
+# Perform t-SNE
+tsne_res <- Rtsne(as.matrix(data_expression_top100), dims = 2, perplexity = 30)
+# t-SNE result data frame
+tsne_df <- as.data.frame(tsne_res$Y)
+tsne_df$Cluster <- as.factor(final_kmeans$cluster)
+# Visualize t-SNE result
+ggplot(tsne_df, aes(x = V1, y = V2, color = Cluster)) +
+  geom_point() +
+  ggtitle("t-SNE Plot of Clusters") +
+  theme_minimal()
+
+
+# Perform UMAP
+umap_res <- umap(data_expression_top100)
+
+# UMAP result in a data frame
+umap_df <- as.data.frame(umap_res$layout)
+umap_df$Cluster <- as.factor(final_kmeans$cluster)
+
+# Visualize UMAP result
+ggplot(umap_df, aes(x = V1, y = V2, color = Cluster)) +
+  geom_point() +
+  ggtitle("UMAP Plot of Clusters") +
+  theme_minimal()
+
+```
+
+The directive from business specifies the use of kmeans for clustering and thus has to be followed through but other methods of clustering may be used to look for better outlined clusters. For now, we move forward with kmeans using 2 clusters. The clusters can be seen using tSNE and UMAP.  
+
+### 7.4. Assign clusters to data.  
+
+```{r assign_clusters}
+data_expression_clustered <- data.frame(data_expression_top100,final_kmeans$cluster)
+# Samples in each cluster
+print(table(data_expression_clustered$final_kmeans.cluster))
+
+```
+Above are the number of patients in cluster 1 and 2 being 346 and 581 respectively.  

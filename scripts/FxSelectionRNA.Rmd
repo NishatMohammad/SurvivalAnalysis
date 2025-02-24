@@ -1,0 +1,60 @@
+---
+title: "Survival Analysis of Breast Cancer Cases: Feature Selection"
+author: "Dr. Nishat Mohammad"
+date: "2024-07-24"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: show
+---
+
+## 6. Feature Selection.  
+
+```{r feature_selection}
+# Merge expression data with survival data
+data_merged <- merge(data_survival_cleaned, data_expression_cleaned_log, by = "PATIENT_ID")
+
+# Get expression data
+data_expression2 <- data_merged %>% 
+  select(-PATIENT_ID, -AGE, -SEX, -OS_STATUS, -DSS_STATUS, -DFS_STATUS, -PFS_STATUS, -OS_MONTHS, -DSS_MONTHS, -DFS_MONTHS,-PFS_MONTHS)
+data_expression2[1:10,1:10]
+
+# Get  OS data for Surv object
+data_surv_OS <- data_merged %>% select(PATIENT_ID, OS_MONTHS, OS_STATUS)
+# Get Surv Object
+surv_obj_OS <- Surv(time = data_surv_OS$OS_MONTHS, event = data_surv_OS$OS_STATUS)
+head(surv_obj_OS)
+any(is.na(surv_obj_OS))
+  
+```
+
+### 6.1. Top 100 Genes by Fitting Cox Proportional Hazard Model.  
+
+```{r coxph_top100genes, warning=FALSE, message=FALSE}
+# Get p values
+p_vals <- numeric(ncol(data_expression2))
+
+# Fit a coxph model
+for (i in 1:ncol(data_expression2)) {
+  gene <- data_expression2[, i]
+  cox_model <- coxph(surv_obj_OS ~ gene)
+  p_vals[i] <- summary(cox_model)$coefficients[5]
+}
+
+# Genes with p-values in a data frame
+gene_p_vals <- data.frame(Gene = colnames(data_expression2), P_Value = p_vals)
+# sort by p values
+gene_p_vals <- gene_p_vals[order(gene_p_vals$P_Value), ]
+# Get top 100 genes
+top_genes <- gene_p_vals[1:100, ]
+knitr::kable(top_genes)
+
+```
+
+The Top 100 Genes are listed above in ascending order by p-values.  
+

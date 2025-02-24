@@ -1,0 +1,229 @@
+---
+title: "Survival Analysis of Breast Cancer Cases: Suvival Analysis with CoxPH and Kaplan-Meier"
+author: "Dr. Nishat Mohammad"
+date: "2024-07-24"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: show
+---
+
+
+
+## 8. Survival Analysis in Clusters.  
+
+```{r randome_gene}
+# Choose a random gene
+set.seed(786)
+random_gene <- sample(top_genes$Gene, 1)
+random_gene
+```
+
+The random gene is IRF2.  
+
+### 8.1. Cox Proportional Hazards Model.  
+
+#### 8.1.1. Effect of IRF2 within Cluster 1.  
+
+```{r coxph_model_cluster1}
+# Effect of random gene on cluster 1
+data_expression_clustered$PATIENT_ID <- rownames(data_expression_clustered)
+data_cluster1 <- data_expression_clustered %>%
+  filter(final_kmeans.cluster == 1)
+
+# Merge Survival OS data and the clusterd expression data
+data_cluster1OS <- merge(data_cluster1, data_surv_OS, by ="PATIENT_ID")
+
+# Survival object for cluster 1
+surv_obj_cluster1 <- Surv(time = data_cluster1OS$OS_MONTHS, event = data_cluster1OS$OS_STATUS)
+head(surv_obj_cluster1)
+
+dim(surv_obj_cluster1)
+dim(data_cluster1)
+# Fit the CoxPH model
+cox_model_cluster1 <- coxph(surv_obj_cluster1 ~ data_cluster1[[random_gene]], data = data_cluster1)
+
+# Display results
+coxph_cluster1 <- summary(cox_model_cluster1)
+coxph_cluster1
+```
+The summary of the Cox Proportional Hazards Model (CoxPH) for cluster 1 indicates the following:  
+
+1. Coefficient: This is associated with the expression of the randomly chosen gene (IRF2) within cluster 1 is approximately -0.1959.
+
+2. Hazard Ratio: The hazard ratio (the change in the hazard for a one-unit increase in the expression of random_gene, is approximately 0.8221). The hazard of experiencing the event (death) decreases by approximately 17.79% (1 - 0.8221 = 0.1779 or 17.79%). Higher expression levels of random_gene are associated with a decreased risk of death occurring within cluster 1 indicating a potential protective effect.  
+
+3. Standard Error: The standard error associated with the coefficient estimate is 0.1298.  
+
+4. Z-value (z): The z-value (the coefficient divided by its standard error) is approximately -1.509.  
+
+5. p-value: The p-value associated with the z-value is 0.131, which indicates that there is no significant association between the expression of random_gene and survival within cluster 1A p-value less than the conventional significance level of 0.05 is typically considered statistically significant. Here, the p-value is greater than 0.05 (p = 0.131), indicating that there is insufficient evidence to reject the null hypothesis of no association between random_gene expression and survival within cluster 1.  
+
+6. 95% Confidence Interval (lower .95, upper .95): The 95% confidence interval for the hazard ratio ranges from approximately 0.6374 to 1.06.  
+
+7. Concordance: The concordance index, a measure of predictive accuracy, is approximately 0.561. This suggests that the model's predictive accuracy is slightly better than random chance (0.5). It is not high enough, indicating that there is room for improvement in the model's ability to rank individuals according to their risk of experiencing the event (survival time).
+
+8. Likelihood Ratio Test: The likelihood ratio test statistic is 2.16 on 1 degree of freedom, with a corresponding p-value of 0.1.  
+
+9. Wald Test: The Wald test statistic is 2.28 on 1 degree of freedom, with a corresponding p-value of 0.1.  
+
+10. Score (logrank) Test: The score test statistic, which is also known as the logrank test, is 2.28 on 1 degree of freedom, with a corresponding p-value of 0.1.  
+
+There is a trend suggesting an association between the expression of IRF2 and survival within cluster 1, the results are not statistically significant at the conventional significance level of 0.05. Further investigation or larger sample sizes may be warranted to confirm any potential associations. Other clustering methods may also be explored in further analysis.
+
+
+#### 8.1.2. Effect of IRF2 within Cluster 2.  
+
+```{r coxph_cluster2}
+# Effect of random gene on cluster 2
+data_cluster2 <- data_expression_clustered %>%
+  filter(final_kmeans.cluster == 2)
+
+# Merge Survival OS data and the clusterd expression data
+data_cluster2OS <- merge(data_cluster2, data_surv_OS, by ="PATIENT_ID")
+
+# Survival object for cluster 1
+surv_obj_cluster2 <- Surv(time = data_cluster2OS$OS_MONTHS, event = data_cluster2OS$OS_STATUS)
+head(surv_obj_cluster2)
+
+dim(surv_obj_cluster2)
+dim(data_cluster2)
+# Fit the CoxPH model
+cox_model_cluster2 <- coxph(surv_obj_cluster2 ~ data_cluster2[[random_gene]], data = data_cluster2)
+
+# Display results
+summary(cox_model_cluster2)
+
+```
+From the results for cluster 2:
+1. Hazard Ratio (HR): The coefficient associated with the random gene (IRF2) is -0.07365. The hazard ratio (HR) is calculated as exp(coef), which is 0.929. For each unit increase in the expression of IRF2, the risk or hazard of an event decreases by approximately 7.1% (1 - HR * 100).  
+
+2. P-value: The p-value associated with the coefficient is 0.747, this show not week significance. The p-value is high, suggesting that the association may not be statistically significant.  
+
+3. Concordance Index (C-index): The C-index is reported as 0.495 with a standard error of 0.07. The C-index measures the predictive accuracy of the model. A value closer to 1 indicates better predictive accuracy. Here, a value of 0.495 suggests poor predictive accuracy within Cluster 2.
+4. Likelihood Ratio Test (LR Test), Wald Test, and Score (Log-rank) Test: The p-values for these tests are approximately 0.7. They assess the significance of the coefficient associated with IRF2. The high p-values suggest that there is no significant evidence to reject the null hypothesis, indicating that the association between IRF2 expression and survival within Cluster 2 may not be statistically significant.  
+
+To Summarize the effect of IRF2 on cluster 1 and 2 through CoxPH, the model shows that for both clusters the hazard ratios indicate the direction and magnitude of the association between IRF2 and survival. The p-values and C-index values suggest that the association may not be statistically significant and the predictive accuracy of the models may be limited within these clusters. Further investigation and refinement of the models may be necessary to identify significant predictors of survival within each cluster.  
+
+
+### 8.2. Kaplan-Meier Survival Analysis.  
+
+#### 8.2.1. Effect of High and Low expression of IRF2 on Cluster 1.  
+
+```{r km_cluster1}
+# Function for KM analysis
+analyze_survival_km <- function(data, gene_expression_column, median_expression) {
+  # Column for gene expression above or below the median
+  data$group <- ifelse(data[[gene_expression_column]] >= median_expression, "High", "Low")
+  
+  # Survival object
+  surv_obj <- Surv(time = data$OS_MONTHS, event = data$OS_STATUS)
+  
+  # Fit Kaplan-Meier survival model
+  surv_fit <- survfit(surv_obj ~ group, data = data)
+  
+  # Visualize Kaplan-Meier survival curves
+  plot(surv_fit, main = paste("Kaplan-Meier Survival Curve for", gene_expression_column))
+  
+  # Log-rank test
+  surv_diff <- survdiff(surv_obj ~ group, data = data)
+  print(surv_diff)
+}
+
+# Perform survival analysis for cluster 1
+analyze_survival_km(data_cluster1OS, "IRF2", median_expression = median(data_cluster1OS$IRF2))
+
+```
+From the above curves and statistical tests for Cluster 1:  
+The KM curve shows two lines representing the survival probability over time for the "High" and "Low" IRF2 expression groups. The x-axis represents the time in months, while the y-axis represents the survival probability.
+The separation between the two lines indicates the difference in survival probability between the two groups.  
+
+For the Log-Rank Test:  
+
+1. The chi-squared statistic is 2.8 with 1 degree of freedom.  
+
+2. The p-value associated with this test statistic is 0.09.  
+
+Since the p-value (0.09) is greater than the significance level of 0.05, we fail to reject the null hypothesis. There is not enough statistical evidence to conclude that there is a significant difference in survival between the "High" and "Low" expression groups for the gene IRF2 in Cluster 1.  
+
+
+#### 8.2.2. Effect of High and Low expression of IRF2 on Cluster 1.  
+
+```{r km_cluster2}
+# Perform survival analysis for cluster 2
+analyze_survival_km(data_cluster2OS, "IRF2", median_expression = median(data_cluster2OS$IRF2))
+```
+
+For Cluster 2 KM analysis:
+Similar to Cluster 1, the KM curve for Cluster 2 show the survival probabilities over time for the "High" and "Low" IRF2 expression groups. the KM curves can provide a visual confirmation of the lack of difference in survival probabilities between the groups with several points of overlap and crosing over.
+The chi-squared statistic is 0, and the p-value is 0.9. Since the p-value is significantly higher than 0.05, we conclude that there is no statistically significant difference in survival between the "High" and "Low" expression groups for the gene IRF2 in Cluster 2. The expression level of IRF2 does not have a significant impact on the survival of patients in Cluster 2.  
+
+
+## 9. Results and Interpretation.  
+
+### 9.1. Summary of Results.  
+
+#### Cox Proportional Hazards Model (CoxPH) Analysis
+
+##### Cluster 1:  
+
+Gene: IRF2  
+
+Coefficient (coef): -0.1959  
+
+Hazard Ratio (exp(coef)): 0.8221  
+
+P-value: 0.131  
+
+Comments: The hazard ratio of 0.8221 indicates that higher expression of IRF2 is associated with a 17.79% decrease in the hazard (risk of death). However, this result is not statistically significant (p > 0.05).
+
+##### Cluster 2:  
+
+Gene: IRF2  
+
+Coefficient (coef): -0.07365  
+
+Hazard Ratio (exp(coef)): 0.9290  
+
+P-value: 0.747  
+
+Comments: The hazard ratio of 0.9290 suggests a slight decrease in the hazard with higher expression of IRF2, but this result is not statistically significant (p > 0.05).
+
+
+#### Kaplan-Meier (KM) Survival Analysis.  
+
+##### Cluster 1:
+
+Chi-squared Statistic (Chisq): 2.8  
+
+P-value: 0.09  
+Comment: There is no significant difference in survival between the "High" and "Low" IRF2 expression groups (p > 0.05).
+
+#### Cluster 2:
+
+Chi-squared Statistic (Chisq): 0  
+P-value: 0.9  
+Comment: There is no significant difference in survival between the "High" and "Low" IRF2 expression groups (p > 0.05)  
+
+### 9.2. Final Conclusion.  
+
+The survival analysis using both Cox Proportional Hazards Models and Kaplan-Meier analysis for the gene IRF2 in Clusters 1 and 2 did not show any statistically significant impact on patient survival. In both clusters, neither the CoxPH nor the KM analyses indicated significant differences in survival based on IRF2 expression levels.  
+
+### 9.3. Suggestions for Improvement.  
+
+To enhance the accuracy and reliability of clustering and survival analysis, different clustering algorithms such as hierarchical clustering and DBSCAN can be used while evaluating their performance. Advanced methods like consensus clustering can identify more robust clusters.  
+
+Including additional covariates in the CoxPH model can account for potential confounding factors, and performing multivariate analysis may improve the model's predictive power. Covariates like age and gender are a great place to start.  
+
+Data pre-processing techniques like feature selection and PCA can reduce noise and improve clustering quality, while ensuring proper normalization and scaling.  
+
+Validation of findings using independent data sets and cross-validation techniques will ensure robustness and generalizing. In R, the `clValid` package provides nice options.  
+
+With additional time and discussion on business needs, these improvements can be systematically incorporated into the current analysis. Implementing these enhancements will lead to more robust, accurate, and insightful results in both clustering and survival analyses. This will facilitate more meaningful interpretations and conclusions to advance understanding of the data. While this study focused on the event of death in the given time, the DSS, DFS and PFS status can be looked into to understand how disease progression can affect the chances of survival.  
+
+Thank you for your audience!!!  

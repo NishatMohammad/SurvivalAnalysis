@@ -1,0 +1,249 @@
+---
+title: "Survival Analysis of Breast Cancer Cases: Data Preprocessing"
+author: "Dr. Nishat Mohammad"
+date: "2024-07-24"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: show
+---
+
+## 1. Introduction.  
+
+Invasive breast cancer poses a significant global health concern and is a type of cancer that has spread from the original ducts or lobules to surrounding breast tissue. The factors influencing survival rates in patients with invasive breast cancer is crucial to transform treatment strategies and patient outcomes.
+
+This Report will go into Survival analysis of Invasive Breast cancer using RNA-Seq and clinical data obtained from cbio Portal.  
+
+Survival analysis plays a pivotal role in biomedical research, particularly in oncology, where understanding the factors influencing patient outcomes is of paramount importance.  
+
+In this report, the application of survival analysis techniques is delved into to investigate the impact of gene expression patterns on patient survival in cancer cohorts.  
+
+The primary objective was to explore how variations in gene expression levels may correlate with differences in patient survival times.  
+
+To achieve this, a combination of Cox Proportional Hazards (CoxPH) modeling and Kaplan-Meier (KM) survival analysis were employed, coupled with clustering techniques. By examining these relationships, potential biomarkers and prognostic indicators that could aid in patient stratification and clinical decision-making can be uncovered.  
+
+The analysis will be carried out in R and on HPCC and published in an RMD notebook rendered to a word document.  
+
+This report outlines methodology, presents findings, and discusses the implications of results for future research. This analysis will endeavor to contribute to the growing body of knowledge aimed at improving patient outcomes in oncology.  
+
+
+
+
+## 2. Load packages.  
+
+The packages in R that will be used are loaded below.
+
+```{r load_packages, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(survival)
+library(factoextra)
+library(cluster)
+library(NbClust)
+library(gridExtra)
+library(ggplot2)
+library(Rtsne)
+library(umap)
+
+```
+
+## 3. Load the data.  
+
+```{r get_data, message=FALSE, warning=FALSE}
+# Path to RNA Seq expression file
+file_path_expr <- "../data/data_mrna_seq_v2_rsem.txt"
+
+# Path to clinical data
+file_path_clin <- "../data/data_clinical_patient.txt"
+
+# Load expression data
+data_expression <- read_delim(file_path_expr, delim = "\t")
+# View expression data
+#head(data_expression)
+
+# Load clinical data
+data_clinical <- read_delim(file_path_clin, delim = "\t")
+# View clinical data
+#head(data_clinical)
+
+```
+
+The RNA Seq expression data .txt file and corresponding clinical data .txt file were downloaded from cbio portal and loaded into  the respective variables. Let us move on to explore the data.
+
+
+## 4. Data Exploration.  
+
+### 4.1. RNA Seq Data exploration.  
+
+```{r expression_data_exploration}
+# Look at the first 10 rows and columns
+data_expression[1:10,1:10]
+dimensions_data_expression <- dim(data_expression)
+
+# Missing values exploration
+any(is.na(data_expression))
+# Missing values in other columns apart from first
+any(is.na(data_expression[,-1]))
+sum(is.na(data_expression$Hugo_Symbol))
+
+# Zero expression values
+num_rows_with_zeros <- sum(apply(data_expression[,3:ncol(data_expression)], 1, function(row) any(row == 0)))
+
+# Get the rows with constant values for all samples
+constant_rows <- apply(data_expression[,3:ncol(data_expression)], 1, function(x) length(unique(x)) == 1)
+num_constant_rows <- sum(constant_rows==TRUE)
+
+```
+
+The RNA Seq Data has dimensions `r dimensions_data_expression`, the first column is Hugo_Symbol and the second is Entrez_Gene_Id, the rest are sample Ids. 
+The Hugo_symbol is missing 13 gene symbols. I may consider removing these rows during data cleaning.  
+There are a total of `r num_rows_with_zeros` rows that have zero expression values.These may or may not be missing values.  
+To solve that dilemma I checked the rows with constant expression values. There are a total of `r num_constant_rows` rows that have all expression values constant which is biologically impossible and will be considered as artifacts sourced at some point during the experiment and will be removed these rows for ease of analysis.  
+
+
+### 4.2. Clinical Data Exploration.  
+
+```{r clinical_data_exploration}
+# First 10 rows and columns
+data_clinical[1:10.1:10]
+# Take of the first 4 rows of the data
+data_clinical2 <- data_clinical[5:nrow(data_clinical),]
+
+# explore the data
+str(data_clinical2)
+glimpse(data_clinical2)
+dimensions_data_clinical2 <- dim(data_clinical2)
+#summary(data_clinical2)
+
+# Missing values
+any(is.na(data_clinical2))
+data_clinical_na <- sum(is.na(data_clinical2))
+data_clinical_na_cols <- colSums(is.na(data_clinical2))
+
+# Survival and Event features
+unique(data_clinical2$`Overall Survival Status`)
+
+```
+
+The Clinical data has dimensions of `r dimensions_data_clinical2`, the first 4 rows are short notes and the actual data begins in row 5, the 4th row has the appropriate column names, and will be used for that purpose in data cleaning section. There are a total of `r data_clinical_na` which can be found in the following columns:  
+`r data_clinical_na_cols`. 
+
+For this analysis, the survival data is in the last 9 features and will be extracted from the clinical data 
+
+
+## 5. Data Preprocessing.  
+
+### 5.1. Clinical Data Preprocessing.  
+
+```{r clinical_data_preproc}
+# Fix Column names
+colnames(data_clinical2) <- data_clinical[4,]
+colnames(data_clinical2)
+
+# Get Survival data
+data_survival <- data.frame(data_clinical2[,1], data_clinical2[,5:6], data_clinical2[, (ncol(data_clinical2)-8):(ncol(data_clinical2)-1)])
+
+# Categorical features
+cat_fx <- data.frame(data_survival$SEX,data_survival$OS_STATUS, data_survival$DSS_STATUS, data_survival$DFS_STATUS, data_survival$PFS_STATUS)
+
+# Look at the unique values for each column
+get_uniq_vals <- function(data) {
+  uniq_vals <- lapply(data, unique)
+  return(uniq_vals)
+}
+unique_survival_values <- get_uniq_vals(cat_fx)
+
+# Handle Missing values for categorical features
+data_survival_cleaned <- data_survival %>%
+  filter(!is.na(DFS_STATUS), !is.na(DSS_STATUS))
+colSums(is.na(data_survival_cleaned))
+
+# Binary encode categorical features
+data_survival_cleaned$SEX <- as.factor(ifelse(data_survival_cleaned$SEX == "Female", 1, 0))
+data_survival_cleaned$OS_STATUS <- as.factor(ifelse(data_survival_cleaned$OS_STATUS == "1:DECEASED", 1, 0))
+data_survival_cleaned$DSS_STATUS <- as.factor(ifelse(data_survival_cleaned$DSS_STATUS == "1:DEAD WITH TUMOR", 1, 0))
+data_survival_cleaned$DFS_STATUS <- as.factor(ifelse(data_survival_cleaned$DFS_STATUS == "1:Recurred/Progressed", 1, 0))
+data_survival_cleaned$PFS_STATUS <- as.factor(ifelse(data_survival_cleaned$PFS_STATUS == "1:PROGRESSION", 1, 0))
+
+# Change factored categorical variables to numeric
+data_survival_cleaned$SEX <-as.numeric(data_survival_cleaned$SEX)
+data_survival_cleaned$OS_STATUS <- as.numeric(data_survival_cleaned$OS_STATUS)
+data_survival_cleaned$DSS_STATUS <- as.numeric(data_survival_cleaned$DSS_STATUS)
+data_survival_cleaned$DFS_STATUS <- as.numeric(data_survival_cleaned$DFS_STATUS)
+data_survival_cleaned$PFS_STATUS <- as.numeric(data_survival_cleaned$PFS_STATUS)
+
+# Change continuous variables to numeric class
+cont_vars <- c("AGE", "OS_MONTHS", "DSS_MONTHS", "DFS_MONTHS", "PFS_MONTHS")
+data_survival_cleaned[cont_vars] <- lapply(data_survival_cleaned[cont_vars], as.numeric)
+
+# Impute mean for NA in continuous variables 
+cont_var_na <- c("DSS_MONTHS", "PFS_MONTHS", "DFS_MONTHS")
+# Get Mean for each cont column
+means <- sapply(data_survival_cleaned[cont_var_na], function(x) mean(as.numeric(x), na.rm = TRUE))
+# Impute here
+for(var in cont_var_na) {
+  data_survival_cleaned[[var]][is.na(data_survival_cleaned[[var]])] <- means[var]
+}
+
+# Explore after Clean up
+glimpse(data_survival_cleaned)
+summary(data_survival_cleaned)
+str(data_survival_cleaned)
+any(is.na(data_survival_cleaned))
+
+```
+
+In the above chunk of code, the column names were tidied. Missing values removed form categorical variables, and imputed with mean for the continuous variables. Binary encoding was carried out for the categorical variables. The variables were converted to numeric type. The cleaned data has been explored above.  
+
+
+### 5.2. Expression Data Presprocessing.  
+
+```{r expression_data_preproc}
+# Remove rows with NA
+data_expression_filtered <- data_expression %>% drop_na()
+
+# Transpose columns to rows
+data_expression_t <- as.data.frame(t(data_expression_filtered))
+
+# Fix column names
+colnames(data_expression_t) <- data_expression_t[1,]
+data_expression_t <- data_expression_t[-1,]
+
+# Fix row names to omit -01 ending
+row.names(data_expression_t) <- gsub("-01$", "", row.names(data_expression_t))
+
+# Get the patient Ids
+patient_ids <- data_survival_cleaned$PATIENT_ID
+# Get all expression data for Pt ids
+data_expression_cleaned <- data_expression_t[rownames(data_expression_t) %in% patient_ids, ]
+
+# Change class to numeric
+data_expression_cleaned_num <- as.data.frame(lapply(data_expression_cleaned, as.numeric))
+
+# Remove columns with constant values for all patients as missing values
+constant_cols <- apply(data_expression_cleaned_num, 2, function(x) length(unique(x)) == 1)
+sum(constant_cols==TRUE)
+data_expression_cleaned_num <- data_expression_cleaned_num[, !constant_cols]
+
+# Log transformation
+data_expression_log <- log1p(data_expression_cleaned_num)
+
+# Get PATIENT_ID column
+data_expression_cleaned_log <- data.frame(PATIENT_ID = rownames(data_expression_cleaned), data_expression_log, row.names = NULL)
+
+# Explore after clean up
+dim(data_expression_cleaned_log)
+data_expression_cleaned_log[1:10,1:10]
+any(is.na(data_expression_cleaned_log))
+sum((apply(data_expression_cleaned_log, 2, function(x) length(unique(x)) == 1))==TRUE)
+
+```
+
+The RNA Seq expression data was cleaned in the above chunk of code. The rows with missing values were taken off. The data was transposed. Tidying of column and row names was done. Patient Ids were matched with those from expression and clinical data. The features with constant values for every patient were considered as missing values as this is not biological compatible and were thus removed. The type was changed to numeric for the expression values after which they were log transformed. A new column was created for the patient IDs.  

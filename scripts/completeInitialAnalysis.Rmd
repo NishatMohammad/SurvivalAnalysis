@@ -1,0 +1,651 @@
+---
+title: "Report on Survival analysis for Invasive Breast Cancer"
+author: "Dr. Nishat Fatima Mohammad"
+date: "07/30/2024"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: show
+---
+
+
+## 1. Introduction.  
+
+Invasive breast cancer poses a significant global health concern and is a type of cancer that has spread from the original ducts or lobules to surrounding breast tissue. The factors influencing survival rates in patients with invasive breast cancer is crucial to transform treatment strategies and patient outcomes.
+
+This Report will go into Survival analysis of Invasive Breast cancer using RNA-Seq and clinical data obtained from cbio Portal.  
+
+Survival analysis plays a pivotal role in biomedical research, particularly in oncology, where understanding the factors influencing patient outcomes is of paramount importance.  
+
+In this report, the application of survival analysis techniques is delved into to investigate the impact of gene expression patterns on patient survival in cancer cohorts.  
+
+The primary objective was to explore how variations in gene expression levels may correlate with differences in patient survival times.  
+
+To achieve this, a combination of Cox Proportional Hazards (CoxPH) modeling and Kaplan-Meier (KM) survival analysis were employed, coupled with clustering techniques. By examining these relationships, potential biomarkers and prognostic indicators that could aid in patient stratification and clinical decision-making can be uncovered.  
+
+The analysis will be carried out in R and on HPCC and published in an RMD notebook rendered to a word document.  
+
+This report outlines methodology, presents findings, and discusses the implications of results for future research. This analysis will endeavor to contribute to the growing body of knowledge aimed at improving patient outcomes in oncology.  
+
+
+
+
+## 2. Load packages.  
+
+The packages in R that will be used are loaded below.
+
+```{r load_packages, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(survival)
+library(factoextra)
+library(cluster)
+library(NbClust)
+library(gridExtra)
+library(ggplot2)
+library(Rtsne)
+library(umap)
+
+```
+
+## 3. Load the data.  
+
+```{r get_data, message=FALSE, warning=FALSE}
+# Path to RNA Seq expression file
+file_path_expr <- "../data/data_mrna_seq_v2_rsem.txt"
+
+# Path to clinical data
+file_path_clin <- "../data/data_clinical_patient.txt"
+
+# Load expression data
+data_expression <- read_delim(file_path_expr, delim = "\t")
+# View expression data
+#head(data_expression)
+
+# Load clinical data
+data_clinical <- read_delim(file_path_clin, delim = "\t")
+# View clinical data
+#head(data_clinical)
+
+```
+
+The RNA Seq expression data .txt file and corresponding clinical data .txt file were downloaded from cbio portal and loaded into  the respective variables. Let us move on to explore the data.
+
+
+## 4. Data Exploration.  
+
+### 4.1. RNA Seq Data exploration.  
+
+```{r expression_data_exploration}
+# Look at the first 10 rows and columns
+data_expression[1:10,1:10]
+dimensions_data_expression <- dim(data_expression)
+
+# Missing values exploration
+any(is.na(data_expression))
+# Missing values in other columns apart from first
+any(is.na(data_expression[,-1]))
+sum(is.na(data_expression$Hugo_Symbol))
+
+# Zero expression values
+num_rows_with_zeros <- sum(apply(data_expression[,3:ncol(data_expression)], 1, function(row) any(row == 0)))
+
+# Get the rows with constant values for all samples
+constant_rows <- apply(data_expression[,3:ncol(data_expression)], 1, function(x) length(unique(x)) == 1)
+num_constant_rows <- sum(constant_rows==TRUE)
+
+```
+
+The RNA Seq Data has dimensions `r dimensions_data_expression`, the first column is Hugo_Symbol and the second is Entrez_Gene_Id, the rest are sample Ids. 
+The Hugo_symbol is missing 13 gene symbols. I may consider removing these rows during data cleaning.  
+There are a total of `r num_rows_with_zeros` rows that have zero expression values.These may or may not be missing values.  
+To solve that dilemma I checked the rows with constant expression values. There are a total of `r num_constant_rows` rows that have all expression values constant which is biologically impossible and will be considered as artifacts sourced at some point during the experiment and will be removed these rows for ease of analysis.  
+
+
+### 4.2. Clinical Data Exploration.  
+
+```{r clinical_data_exploration}
+# First 10 rows and columns
+data_clinical[1:10.1:10]
+# Take of the first 4 rows of the data
+data_clinical2 <- data_clinical[5:nrow(data_clinical),]
+
+# explore the data
+str(data_clinical2)
+glimpse(data_clinical2)
+dimensions_data_clinical2 <- dim(data_clinical2)
+#summary(data_clinical2)
+
+# Missing values
+any(is.na(data_clinical2))
+data_clinical_na <- sum(is.na(data_clinical2))
+data_clinical_na_cols <- colSums(is.na(data_clinical2))
+
+# Survival and Event features
+unique(data_clinical2$`Overall Survival Status`)
+
+```
+
+The Clinical data has dimensions of `r dimensions_data_clinical2`, the first 4 rows are short notes and the actual data begins in row 5, the 4th row has the appropriate column names, and will be used for that purpose in data cleaning section. There are a total of `r data_clinical_na` which can be found in the following columns:  
+`r data_clinical_na_cols`. 
+
+For this analysis, the survival data is in the last 9 features and will be extracted from the clinical data 
+
+
+## 5. Data Preprocessing.  
+
+### 5.1. Clinical Data Preprocessing.  
+
+```{r clinical_data_preproc}
+# Fix Column names
+colnames(data_clinical2) <- data_clinical[4,]
+colnames(data_clinical2)
+
+# Get Survival data
+data_survival <- data.frame(data_clinical2[,1], data_clinical2[,5:6], data_clinical2[, (ncol(data_clinical2)-8):(ncol(data_clinical2)-1)])
+
+# Categorical features
+cat_fx <- data.frame(data_survival$SEX,data_survival$OS_STATUS, data_survival$DSS_STATUS, data_survival$DFS_STATUS, data_survival$PFS_STATUS)
+
+# Look at the unique values for each column
+get_uniq_vals <- function(data) {
+  uniq_vals <- lapply(data, unique)
+  return(uniq_vals)
+}
+unique_survival_values <- get_uniq_vals(cat_fx)
+
+# Handle Missing values for categorical features
+data_survival_cleaned <- data_survival %>%
+  filter(!is.na(DFS_STATUS), !is.na(DSS_STATUS))
+colSums(is.na(data_survival_cleaned))
+
+# Binary encode categorical features
+data_survival_cleaned$SEX <- as.factor(ifelse(data_survival_cleaned$SEX == "Female", 1, 0))
+data_survival_cleaned$OS_STATUS <- as.factor(ifelse(data_survival_cleaned$OS_STATUS == "1:DECEASED", 1, 0))
+data_survival_cleaned$DSS_STATUS <- as.factor(ifelse(data_survival_cleaned$DSS_STATUS == "1:DEAD WITH TUMOR", 1, 0))
+data_survival_cleaned$DFS_STATUS <- as.factor(ifelse(data_survival_cleaned$DFS_STATUS == "1:Recurred/Progressed", 1, 0))
+data_survival_cleaned$PFS_STATUS <- as.factor(ifelse(data_survival_cleaned$PFS_STATUS == "1:PROGRESSION", 1, 0))
+
+# Change factored categorical variables to numeric
+data_survival_cleaned$SEX <-as.numeric(data_survival_cleaned$SEX)
+data_survival_cleaned$OS_STATUS <- as.numeric(data_survival_cleaned$OS_STATUS)
+data_survival_cleaned$DSS_STATUS <- as.numeric(data_survival_cleaned$DSS_STATUS)
+data_survival_cleaned$DFS_STATUS <- as.numeric(data_survival_cleaned$DFS_STATUS)
+data_survival_cleaned$PFS_STATUS <- as.numeric(data_survival_cleaned$PFS_STATUS)
+
+# Change continuous variables to numeric class
+cont_vars <- c("AGE", "OS_MONTHS", "DSS_MONTHS", "DFS_MONTHS", "PFS_MONTHS")
+data_survival_cleaned[cont_vars] <- lapply(data_survival_cleaned[cont_vars], as.numeric)
+
+# Impute mean for NA in continuous variables 
+cont_var_na <- c("DSS_MONTHS", "PFS_MONTHS", "DFS_MONTHS")
+# Get Mean for each cont column
+means <- sapply(data_survival_cleaned[cont_var_na], function(x) mean(as.numeric(x), na.rm = TRUE))
+# Impute here
+for(var in cont_var_na) {
+  data_survival_cleaned[[var]][is.na(data_survival_cleaned[[var]])] <- means[var]
+}
+
+# Explore after Clean up
+glimpse(data_survival_cleaned)
+summary(data_survival_cleaned)
+str(data_survival_cleaned)
+any(is.na(data_survival_cleaned))
+
+```
+
+In the above chunk of code, the column names were tidied. Missing values removed form categorical variables, and imputed with mean for the continuous variables. Binary encoding was carried out for the categorical variables. The variables were converted to numeric type. The cleaned data has been explored above.  
+
+
+### 5.2. Expression Data Presprocessing.  
+
+```{r expression_data_preproc}
+# Remove rows with NA
+data_expression_filtered <- data_expression %>% drop_na()
+
+# Transpose columns to rows
+data_expression_t <- as.data.frame(t(data_expression_filtered))
+
+# Fix column names
+colnames(data_expression_t) <- data_expression_t[1,]
+data_expression_t <- data_expression_t[-1,]
+
+# Fix row names to omit -01 ending
+row.names(data_expression_t) <- gsub("-01$", "", row.names(data_expression_t))
+
+# Get the patient Ids
+patient_ids <- data_survival_cleaned$PATIENT_ID
+# Get all expression data for Pt ids
+data_expression_cleaned <- data_expression_t[rownames(data_expression_t) %in% patient_ids, ]
+
+# Change class to numeric
+data_expression_cleaned_num <- as.data.frame(lapply(data_expression_cleaned, as.numeric))
+
+# Remove columns with constant values for all patients as missing values
+constant_cols <- apply(data_expression_cleaned_num, 2, function(x) length(unique(x)) == 1)
+sum(constant_cols==TRUE)
+data_expression_cleaned_num <- data_expression_cleaned_num[, !constant_cols]
+
+# Log transformation
+data_expression_log <- log1p(data_expression_cleaned_num)
+
+# Get PATIENT_ID column
+data_expression_cleaned_log <- data.frame(PATIENT_ID = rownames(data_expression_cleaned), data_expression_log, row.names = NULL)
+
+# Explore after clean up
+dim(data_expression_cleaned_log)
+data_expression_cleaned_log[1:10,1:10]
+any(is.na(data_expression_cleaned_log))
+sum((apply(data_expression_cleaned_log, 2, function(x) length(unique(x)) == 1))==TRUE)
+
+```
+
+The RNA Seq expression data was cleaned in the above chunk of code. The rows with missing values were taken off. The data was transposed. Tidying of column and row names was done. Patient Ids were matched with those from expression and clinical data. The features with constant values for every patient were considered as missing values as this is not biological compatible and were thus removed. The type was changed to numeric for the expression values after which they were log transformed. A new column was created for the patient IDs.  
+
+## 6. Feature Selection.  
+
+```{r feature_selection}
+# Merge expression data with survival data
+data_merged <- merge(data_survival_cleaned, data_expression_cleaned_log, by = "PATIENT_ID")
+
+# Get expression data
+data_expression2 <- data_merged %>% 
+  select(-PATIENT_ID, -AGE, -SEX, -OS_STATUS, -DSS_STATUS, -DFS_STATUS, -PFS_STATUS, -OS_MONTHS, -DSS_MONTHS, -DFS_MONTHS,-PFS_MONTHS)
+data_expression2[1:10,1:10]
+
+# Get  OS data for Surv object
+data_surv_OS <- data_merged %>% select(PATIENT_ID, OS_MONTHS, OS_STATUS)
+# Get Surv Object
+surv_obj_OS <- Surv(time = data_surv_OS$OS_MONTHS, event = data_surv_OS$OS_STATUS)
+head(surv_obj_OS)
+any(is.na(surv_obj_OS))
+  
+```
+
+### 6.1. Top 100 Genes by Fitting Cox Proportional Hazard Model.  
+
+```{r coxph_top100genes, warning=FALSE, message=FALSE}
+# Get p values
+p_vals <- numeric(ncol(data_expression2))
+
+# Fit a coxph model
+for (i in 1:ncol(data_expression2)) {
+  gene <- data_expression2[, i]
+  cox_model <- coxph(surv_obj_OS ~ gene)
+  p_vals[i] <- summary(cox_model)$coefficients[5]
+}
+
+# Genes with p-values in a data frame
+gene_p_vals <- data.frame(Gene = colnames(data_expression2), P_Value = p_vals)
+# sort by p values
+gene_p_vals <- gene_p_vals[order(gene_p_vals$P_Value), ]
+# Get top 100 genes
+top_genes <- gene_p_vals[1:100, ]
+knitr::kable(top_genes)
+
+```
+
+The Top 100 Genes are listed above in ascending order by p-values.  
+
+
+## 7. K-Means Clustering. 
+
+```{r kmeans_clustering}
+# Scale expression data using z-score method
+data_expression_scaled <- scale(data_expression2)
+
+# Add row names
+rownames(data_expression_scaled) <- data_merged$PATIENT_ID
+
+# Get the top 100 gene expressions
+data_expression_top100 <- data_expression_scaled[, top_genes$Gene]
+data_expression_top100[1:10,1:10]
+
+```
+Here the expression data for the top 100 genes was extracted.  
+ 
+ 
+### 7.1. Number of Clusters.  
+
+```{r cluster_number}
+# Range for clusters
+k_range <- 2:10
+
+# Within-cluster sum of squares (WCSS) for each k value
+wcss <- vector("numeric", length(k_range))
+
+# k-means for each value of k and get WCSS
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  kmeans_res <- kmeans(data_expression_top100, centers = k, nstart = 25)
+  wcss[i] <- kmeans_res$tot.withinss
+}
+
+# Elbow plot
+fviz_nbclust(data_expression_top100, kmeans, method = "wss", k.max = 10, nstart = 25)
+
+# silhouette method
+fviz_nbclust(data_expression_top100, kmeans, method = "silhouette")+
+  labs(subtitle = "Silhouette method")
+
+# Gap_Stat is very slow
+#set.seed(786)
+#fviz_nbclust(data_expression_top100, kmeans, nstart = 25,  method = "gap_stat", nboot = 500, verbose=FALSE)+
+#  labs(subtitle = "Gap statistic method")
+
+# Using NbClust()
+set.seed(786)  # For reproducibility
+nbclust_res <- NbClust(data = data_expression_top100, 
+                           distance = "euclidean", 
+                           min.nc = 2, 
+                           max.nc = 10, 
+                           method = "kmeans")
+
+
+# Correlation matrix for the distance
+dist.cor <- get_dist(data_expression_top100, method = "spearman")
+fviz_dist(dist.cor)
+nbclust_spearman <- NbClust(data = data_expression_top100,
+        diss = dist.cor,
+        distance = NULL,
+        min.nc = 2,
+        max.nc = 10,
+        method = "kmeans")
+
+
+```
+The elbow and Silhouette Plots were not conclusive. Using `NbClust()`, the Spearman correlation was applied to the `diss` option with NULL added to the distance option. Finally, 2 as the value of k number of clusters based on the Hubert Statistics Plots.  
+
+
+### 7.2 Clustering with k=2.    
+
+```{r Kmeans_k2}
+set.seed(786)
+kmeans_res <- kmeans(data_expression_top100, centers = 2, nstart = 25)
+str(kmeans_res)
+
+# Visualize clusters
+fviz_cluster(kmeans_res, data = data_expression_top100)
+
+```
+
+Note the two clusters are overlapping, higher values of K will be tried out.
+
+### 7.3. K-means clustering with higher values of k.  
+
+```{r Increase_k}
+k3 <- kmeans(data_expression_top100, centers = 3, nstart = 25)
+k4 <- kmeans(data_expression_top100, centers = 4, nstart = 25)
+k5 <- kmeans(data_expression_top100, centers = 5, nstart = 25)
+
+# plots to compare
+p1 <- fviz_cluster(kmeans_res, geom = "point", data = data_expression_top100) + ggtitle("k = 2")
+p2 <- fviz_cluster(k3, geom = "point",  data = data_expression_top100) + ggtitle("k = 3")
+p3 <- fviz_cluster(k4, geom = "point",  data = data_expression_top100) + ggtitle("k = 4")
+p4 <- fviz_cluster(k5, geom = "point",  data = data_expression_top100) + ggtitle("k = 5")
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+# Final Kmeans with k = 2
+final_kmeans <- kmeans_res
+fviz_cluster(final_kmeans, geom = "point",  data = data_expression_top100) + ggtitle("k = 2")
+
+# Perform t-SNE
+tsne_res <- Rtsne(as.matrix(data_expression_top100), dims = 2, perplexity = 30)
+# t-SNE result data frame
+tsne_df <- as.data.frame(tsne_res$Y)
+tsne_df$Cluster <- as.factor(final_kmeans$cluster)
+# Visualize t-SNE result
+ggplot(tsne_df, aes(x = V1, y = V2, color = Cluster)) +
+  geom_point() +
+  ggtitle("t-SNE Plot of Clusters") +
+  theme_minimal()
+
+
+# Perform UMAP
+umap_res <- umap(data_expression_top100)
+
+# UMAP result in a data frame
+umap_df <- as.data.frame(umap_res$layout)
+umap_df$Cluster <- as.factor(final_kmeans$cluster)
+
+# Visualize UMAP result
+ggplot(umap_df, aes(x = V1, y = V2, color = Cluster)) +
+  geom_point() +
+  ggtitle("UMAP Plot of Clusters") +
+  theme_minimal()
+
+```
+
+The directive from business specifies the use of kmeans for clustering and thus has to be followed through but other methods of clustering may be used to look for better outlined clusters. For now, we move forward with kmeans using 2 clusters. The clusters can be seen using tSNE and UMAP.  
+
+### 7.4. Assign clusters to data.  
+
+```{r assign_clusters}
+data_expression_clustered <- data.frame(data_expression_top100,final_kmeans$cluster)
+# Samples in each cluster
+print(table(data_expression_clustered$final_kmeans.cluster))
+
+```
+Above are the number of patients in cluster 1 and 2 being 346 and 581 respectively.  
+
+
+## 8. Survival Analysis in Clusters.  
+
+```{r randome_gene}
+# Choose a random gene
+set.seed(786)
+random_gene <- sample(top_genes$Gene, 1)
+random_gene
+```
+
+The random gene is IRF2.  
+
+### 8.1. Cox Proportional Hazards Model.  
+
+#### 8.1.1. Effect of IRF2 within Cluster 1.  
+
+```{r coxph_model_cluster1}
+# Effect of random gene on cluster 1
+data_expression_clustered$PATIENT_ID <- rownames(data_expression_clustered)
+data_cluster1 <- data_expression_clustered %>%
+  filter(final_kmeans.cluster == 1)
+
+# Merge Survival OS data and the clusterd expression data
+data_cluster1OS <- merge(data_cluster1, data_surv_OS, by ="PATIENT_ID")
+
+# Survival object for cluster 1
+surv_obj_cluster1 <- Surv(time = data_cluster1OS$OS_MONTHS, event = data_cluster1OS$OS_STATUS)
+head(surv_obj_cluster1)
+
+dim(surv_obj_cluster1)
+dim(data_cluster1)
+# Fit the CoxPH model
+cox_model_cluster1 <- coxph(surv_obj_cluster1 ~ data_cluster1[[random_gene]], data = data_cluster1)
+
+# Display results
+coxph_cluster1 <- summary(cox_model_cluster1)
+coxph_cluster1
+```
+The summary of the Cox Proportional Hazards Model (CoxPH) for cluster 1 indicates the following:  
+
+1. Coefficient: This is associated with the expression of the randomly chosen gene (IRF2) within cluster 1 is approximately -0.1959.
+
+2. Hazard Ratio: The hazard ratio (the change in the hazard for a one-unit increase in the expression of random_gene, is approximately 0.8221). The hazard of experiencing the event (death) decreases by approximately 17.79% (1 - 0.8221 = 0.1779 or 17.79%). Higher expression levels of random_gene are associated with a decreased risk of death occurring within cluster 1 indicating a potential protective effect.  
+
+3. Standard Error: The standard error associated with the coefficient estimate is 0.1298.  
+
+4. Z-value (z): The z-value (the coefficient divided by its standard error) is approximately -1.509.  
+
+5. p-value: The p-value associated with the z-value is 0.131, which indicates that there is no significant association between the expression of random_gene and survival within cluster 1A p-value less than the conventional significance level of 0.05 is typically considered statistically significant. Here, the p-value is greater than 0.05 (p = 0.131), indicating that there is insufficient evidence to reject the null hypothesis of no association between random_gene expression and survival within cluster 1.  
+
+6. 95% Confidence Interval (lower .95, upper .95): The 95% confidence interval for the hazard ratio ranges from approximately 0.6374 to 1.06.  
+
+7. Concordance: The concordance index, a measure of predictive accuracy, is approximately 0.561. This suggests that the model's predictive accuracy is slightly better than random chance (0.5). It is not high enough, indicating that there is room for improvement in the model's ability to rank individuals according to their risk of experiencing the event (survival time).
+
+8. Likelihood Ratio Test: The likelihood ratio test statistic is 2.16 on 1 degree of freedom, with a corresponding p-value of 0.1.  
+
+9. Wald Test: The Wald test statistic is 2.28 on 1 degree of freedom, with a corresponding p-value of 0.1.  
+
+10. Score (logrank) Test: The score test statistic, which is also known as the logrank test, is 2.28 on 1 degree of freedom, with a corresponding p-value of 0.1.  
+
+There is a trend suggesting an association between the expression of IRF2 and survival within cluster 1, the results are not statistically significant at the conventional significance level of 0.05. Further investigation or larger sample sizes may be warranted to confirm any potential associations. Other clustering methods may also be explored in further analysis.
+
+
+#### 8.1.2. Effect of IRF2 within Cluster 2.  
+
+```{r coxph_cluster2}
+# Effect of random gene on cluster 2
+data_cluster2 <- data_expression_clustered %>%
+  filter(final_kmeans.cluster == 2)
+
+# Merge Survival OS data and the clusterd expression data
+data_cluster2OS <- merge(data_cluster2, data_surv_OS, by ="PATIENT_ID")
+
+# Survival object for cluster 1
+surv_obj_cluster2 <- Surv(time = data_cluster2OS$OS_MONTHS, event = data_cluster2OS$OS_STATUS)
+head(surv_obj_cluster2)
+
+dim(surv_obj_cluster2)
+dim(data_cluster2)
+# Fit the CoxPH model
+cox_model_cluster2 <- coxph(surv_obj_cluster2 ~ data_cluster2[[random_gene]], data = data_cluster2)
+
+# Display results
+summary(cox_model_cluster2)
+
+```
+From the results for cluster 2:
+1. Hazard Ratio (HR): The coefficient associated with the random gene (IRF2) is -0.07365. The hazard ratio (HR) is calculated as exp(coef), which is 0.929. For each unit increase in the expression of IRF2, the risk or hazard of an event decreases by approximately 7.1% (1 - HR * 100).  
+
+2. P-value: The p-value associated with the coefficient is 0.747, this show not week significance. The p-value is high, suggesting that the association may not be statistically significant.  
+
+3. Concordance Index (C-index): The C-index is reported as 0.495 with a standard error of 0.07. The C-index measures the predictive accuracy of the model. A value closer to 1 indicates better predictive accuracy. Here, a value of 0.495 suggests poor predictive accuracy within Cluster 2.
+4. Likelihood Ratio Test (LR Test), Wald Test, and Score (Log-rank) Test: The p-values for these tests are approximately 0.7. They assess the significance of the coefficient associated with IRF2. The high p-values suggest that there is no significant evidence to reject the null hypothesis, indicating that the association between IRF2 expression and survival within Cluster 2 may not be statistically significant.  
+
+To Summarize the effect of IRF2 on cluster 1 and 2 through CoxPH, the model shows that for both clusters the hazard ratios indicate the direction and magnitude of the association between IRF2 and survival. The p-values and C-index values suggest that the association may not be statistically significant and the predictive accuracy of the models may be limited within these clusters. Further investigation and refinement of the models may be necessary to identify significant predictors of survival within each cluster.  
+
+
+### 8.2. Kaplan-Meier Survival Analysis.  
+
+#### 8.2.1. Effect of High and Low expression of IRF2 on Cluster 1.  
+
+```{r km_cluster1}
+# Function for KM analysis
+analyze_survival_km <- function(data, gene_expression_column, median_expression) {
+  # Column for gene expression above or below the median
+  data$group <- ifelse(data[[gene_expression_column]] >= median_expression, "High", "Low")
+  
+  # Survival object
+  surv_obj <- Surv(time = data$OS_MONTHS, event = data$OS_STATUS)
+  
+  # Fit Kaplan-Meier survival model
+  surv_fit <- survfit(surv_obj ~ group, data = data)
+  
+  # Visualize Kaplan-Meier survival curves
+  plot(surv_fit, main = paste("Kaplan-Meier Survival Curve for", gene_expression_column))
+  
+  # Log-rank test
+  surv_diff <- survdiff(surv_obj ~ group, data = data)
+  print(surv_diff)
+}
+
+# Perform survival analysis for cluster 1
+analyze_survival_km(data_cluster1OS, "IRF2", median_expression = median(data_cluster1OS$IRF2))
+
+```
+From the above curves and statistical tests for Cluster 1:  
+The KM curve shows two lines representing the survival probability over time for the "High" and "Low" IRF2 expression groups. The x-axis represents the time in months, while the y-axis represents the survival probability.
+The separation between the two lines indicates the difference in survival probability between the two groups.  
+
+For the Log-Rank Test:  
+
+1. The chi-squared statistic is 2.8 with 1 degree of freedom.  
+
+2. The p-value associated with this test statistic is 0.09.  
+
+Since the p-value (0.09) is greater than the significance level of 0.05, we fail to reject the null hypothesis. There is not enough statistical evidence to conclude that there is a significant difference in survival between the "High" and "Low" expression groups for the gene IRF2 in Cluster 1.  
+
+
+#### 8.2.2. Effect of High and Low expression of IRF2 on Cluster 1.  
+
+```{r km_cluster2}
+# Perform survival analysis for cluster 2
+analyze_survival_km(data_cluster2OS, "IRF2", median_expression = median(data_cluster2OS$IRF2))
+```
+
+For Cluster 2 KM analysis:
+Similar to Cluster 1, the KM curve for Cluster 2 show the survival probabilities over time for the "High" and "Low" IRF2 expression groups. the KM curves can provide a visual confirmation of the lack of difference in survival probabilities between the groups with several points of overlap and crosing over.
+The chi-squared statistic is 0, and the p-value is 0.9. Since the p-value is significantly higher than 0.05, we conclude that there is no statistically significant difference in survival between the "High" and "Low" expression groups for the gene IRF2 in Cluster 2. The expression level of IRF2 does not have a significant impact on the survival of patients in Cluster 2.  
+
+
+## 9. Results and Interpretation.  
+
+### 9.1. Summary of Results.  
+
+#### Cox Proportional Hazards Model (CoxPH) Analysis
+
+##### Cluster 1:  
+
+Gene: IRF2  
+
+Coefficient (coef): -0.1959  
+
+Hazard Ratio (exp(coef)): 0.8221  
+
+P-value: 0.131  
+
+Comments: The hazard ratio of 0.8221 indicates that higher expression of IRF2 is associated with a 17.79% decrease in the hazard (risk of death). However, this result is not statistically significant (p > 0.05).
+
+##### Cluster 2:  
+
+Gene: IRF2  
+
+Coefficient (coef): -0.07365  
+
+Hazard Ratio (exp(coef)): 0.9290  
+
+P-value: 0.747  
+
+Comments: The hazard ratio of 0.9290 suggests a slight decrease in the hazard with higher expression of IRF2, but this result is not statistically significant (p > 0.05).
+
+
+#### Kaplan-Meier (KM) Survival Analysis.  
+
+##### Cluster 1:
+
+Chi-squared Statistic (Chisq): 2.8  
+
+P-value: 0.09  
+Comment: There is no significant difference in survival between the "High" and "Low" IRF2 expression groups (p > 0.05).
+
+#### Cluster 2:
+
+Chi-squared Statistic (Chisq): 0  
+P-value: 0.9  
+Comment: There is no significant difference in survival between the "High" and "Low" IRF2 expression groups (p > 0.05)  
+
+### 9.2. Final Conclusion.  
+
+The survival analysis using both Cox Proportional Hazards Models and Kaplan-Meier analysis for the gene IRF2 in Clusters 1 and 2 did not show any statistically significant impact on patient survival. In both clusters, neither the CoxPH nor the KM analyses indicated significant differences in survival based on IRF2 expression levels.  
+
+### 9.3. Suggestions for Improvement.  
+
+To enhance the accuracy and reliability of clustering and survival analysis, different clustering algorithms such as hierarchical clustering and DBSCAN can be used while evaluating their performance. Advanced methods like consensus clustering can identify more robust clusters.  
+
+Including additional covariates in the CoxPH model can account for potential confounding factors, and performing multivariate analysis may improve the model's predictive power. Covariates like age and gender are a great place to start.  
+
+Data pre-processing techniques like feature selection and PCA can reduce noise and improve clustering quality, while ensuring proper normalization and scaling.  
+
+Validation of findings using independent data sets and cross-validation techniques will ensure robustness and generalizing. In R, the `clValid` package provides nice options.  
+
+With additional time and discussion on business needs, these improvements can be systematically incorporated into the current analysis. Implementing these enhancements will lead to more robust, accurate, and insightful results in both clustering and survival analyses. This will facilitate more meaningful interpretations and conclusions to advance understanding of the data. While this study focused on the event of death in the given time, the DSS, DFS and PFS status can be looked into to understand how disease progression can affect the chances of survival.  
+
+Thank you for your audience!!!  
